@@ -163,6 +163,7 @@ import java.util.concurrent.*;
  *  rec.nmfitemitem.parallelize_split_user_size=-1<br>
  *  rec.nmfitemitem.neighbourhood_agreement_loss=1<br>
  *  rec.nmfitemitem.neighbourhood_agreement_est=0<br>
+ *  rec.nmfitemitem.fast_eval_optimization.topx=100<br>
  *  <br>
  *  data.model.splitter=loocv<br>
  *  data.splitter.loocv=user<br>
@@ -190,11 +191,12 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     private double neighbourhoodAgreementLoss;
     private double neighbourhoodAgreementEst;
 
-    private int parallelizeSplitUserSize = 5000;
-    private int cutoff = -1;
+    private int parallelizeSplitUserSize;
     private boolean doNotEstimateYourself = true;
     private boolean adaptiveUpdateRules = true;
+    private int fastEvalOptimizationTopX;
     private TopNList nullEstimatorTopNList;
+    private List<List<ItemEntry<Integer, Double>>> wReconstructTopX;
 
 
     @Override
@@ -209,7 +211,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         parallelizeSplitUserSize = conf.getInt("rec.nmfitemitem.parallelize_split_user_size", -1);
         neighbourhoodAgreementLoss = conf.getDouble("rec.nmfitemitem.neighbourhood_agreement_loss", 1d);
         neighbourhoodAgreementEst = conf.getDouble("rec.nmfitemitem.neighbourhood_agreement_est", 0d);
-        cutoff = conf.getInt("rec.nmfitemitem.cutoff", -1);
+        fastEvalOptimizationTopX = conf.getInt("rec.nmfitemitem.fast_eval_optimization.topx", 100);
 
         logParameters();
         w_reconstruct = new double[numFactors][numItems];
@@ -232,7 +234,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         LOG.info("Using numIterations=" + numIterations);
         LOG.info("Using numUsers=" + numUsers);
         LOG.info("Using numItems=" + numItems);
-        LOG.info("Using cutoff=" + cutoff);
+        LOG.info("Using fastEvalOptimizationTopX=" + fastEvalOptimizationTopX);
     }
 
     private void normItems(double[][] h_analyze) {
@@ -295,25 +297,39 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         }
 
 
-        initBias();
+        initNullEstimator();
+
+        initWReconstructTopX();
+
+    }
+
+    private void initWReconstructTopX() {
+        wReconstructTopX = new ArrayList<>(numFactors);
+        for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
+            TopNList topNList = new TopNList(fastEvalOptimizationTopX);
+            for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
+                topNList.addToSet(itemIdx, w_reconstruct[factorIdx][itemIdx]);
+            }
+            wReconstructTopX.add(topNList.toRecoList());
+        }
 
 
     }
 
 
     // only for predicting items for users without previous items while evaluation phase
-    private void initBias() {
-        double[] b = new double[numItems];
+    private void initNullEstimator() {
+        double[] bias = new double[numItems];
         double allSum =0;
         for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
             double itemSum = trainMatrix.column(itemIdx).sum();
-            b[itemIdx] = itemSum;
+            bias[itemIdx] = itemSum;
             allSum += itemSum;
         }
         for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
-            b[itemIdx] /= allSum;
+            bias[itemIdx] /= allSum;
         }
-        this.nullEstimatorTopNList = getNullEstimatorTopNList(b);
+        this.nullEstimatorTopNList = getNullEstimatorTopNList(bias);
     }
 
 
@@ -376,23 +392,12 @@ public class NMFItemItemRecommender extends AbstractRecommender {
                 SparseVector itemRatingsVector = trainMatrix.row(userIdx);
                 int minCount = doNotEstimateYourself ? 2 : 1;
                 int count = itemRatingsVector.getCount();
-                if (cutoff>0 && count>cutoff){
-//                    LOG.info("count=" + count);
-                    continue;
-                }
                 if (count >= minCount) {
 
                     double g_est = calculateGEstimate(count);
-
-                    double g_loss;
-                    if (neighbourhoodAgreementLoss >0) {
-                        g_loss = 1d / Math.pow(count - 1d, neighbourhoodAgreementLoss);
-                    } else {
-                        g_loss = 1d;
-                    }
+                    double g_loss = calculateGLoss(count);
                     double g = g_est * g_loss;
-//                    double g =((double)count)/((double)count-1);
-//                    double g =1;
+
                     int[] itemIndices = itemRatingsVector.getIndex();
                     double[] allUserLatentFactors = predictFactors(itemIndices);
 
@@ -448,6 +453,14 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         }
     }
 
+    private double calculateGLoss(int count) {
+        if (neighbourhoodAgreementLoss >0) {
+            return 1d / Math.pow(count - 1d, neighbourhoodAgreementLoss);
+        } else {
+            return 1d;
+        }
+    }
+
     private double calculateGEstimate(int count) {
         if (neighbourhoodAgreementEst >0) {
             return 1d / Math.pow(count - 1d, neighbourhoodAgreementEst);
@@ -460,7 +473,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     private void trainMultiThreaded(ExecutorService executorService, int iteration) {
 
         try {
-            AggResult aggResultAll = getAggResult(executorService);
+            AggResult aggResultAll = getAggResultParallel(executorService);
             applyAggResult(iteration, aggResultAll);
         }
         catch (InterruptedException | ExecutionException e) {
@@ -514,7 +527,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         w_reconstruct = new_w_reconstruct;
     }
 
-    private AggResult getAggResult(ExecutorService executorService) throws InterruptedException, ExecutionException {
+    private AggResult getAggResultParallel(ExecutorService executorService) throws InterruptedException, ExecutionException {
         // Creating the parallel execution tasks
         List<ParallelExecTask> tasks = new ArrayList<>((numUsers / parallelizeSplitUserSize) + 1);
         for (int fromUser = 0; fromUser < numUsers; fromUser += parallelizeSplitUserSize) {
@@ -580,13 +593,9 @@ public class NMFItemItemRecommender extends AbstractRecommender {
                 }
                 double newValue = oldValue * Math.pow(numerator / denominator, exponent);
 
-                //LOG.warn("Analyze Double.isNaN  " + numerator + " " + denominator + " " + oldValue + " " + newValue + "  " + factorIdx + "  " + itemIdx);
                 if (Double.isNaN(newValue)) {
                     newValue =0;
                 }
-//				if (newValue<1e-16) {
-//					newValue =1e-16;
-//				}
                 h_analyze[factorIdx][itemIdx] = newValue;
             }
         }
@@ -604,12 +613,6 @@ public class NMFItemItemRecommender extends AbstractRecommender {
                 double denominator = aggResultAll.resultDenominatorReconstruct2[factorIdx];
                 double newValue = oldValue * Math.pow(numerator / (denominator - denominatorDiff), exponent);
 
-//		if (Double.isNaN(newValue)) {
-//			LOG.warn("Double.isNaN  " + numerator + " " + denominator +" " + denominator2 + " " + oldValue + " " + newValue);
-//		}
-//		if (newValue<1e-16) {
-//			newValue =1e-16;
-//		}
                 new_w_reconstruct[factorIdx][itemIdx] = newValue;
             }
         }
@@ -632,7 +635,6 @@ public class NMFItemItemRecommender extends AbstractRecommender {
 
         double divergence = aggResultAll.sumLog- aggResultAll.boughtItems + sumAllEstimate;
         LOG.info("Divergence (before iteration " + iteration +")=" + divergence + "  sumLog=" + aggResultAll.sumLog + "  countAll=" + aggResultAll.boughtItems + "  sumAllEstimate=" + sumAllEstimate);
-        //LOG.info("Divergence (before iteration " + iteration +")=" + divergence);
 
         return divergence;
     }
@@ -678,14 +680,14 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     }
 
     /*
-     * This method is overridden only for performance reasons.
+     * This method is overridden for performance reasons.
      *
-     * Calculate all item ratings at once for one user has much better performance than for each item user combination alone.
+     * Calculate all ratings of all items of one user has much better performance than looping over each item-user combination.
      *
-     * Effect is significant on big data
+     * Effect is very significant on big data
      */
     @Override
-    protected RecommendedList recommendRank() throws LibrecException {
+    protected RecommendedList recommend() throws LibrecException {
         RecommendedItemList recommendedList = new RecommendedItemList(numUsers - 1, numUsers);
 
         LOG.info("Calculating RecommendedList for " + numUsers + " users");
@@ -699,26 +701,33 @@ public class NMFItemItemRecommender extends AbstractRecommender {
             if (count ==0){
                 topNList = nullEstimatorTopNList;
             } else {
+                double g_est=calculateGEstimate(count);
 
                 double[] thisUserLatentFactors = predictFactors(itemRatingsVector.getIndex());
                 topNList = new TopNList(topN);
 
 
-                for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
-                    if (itemRatingsVector.contains(itemIdx)) {
-                        continue;
+                HashMap<Integer, Double> map = new HashMap<>();
+                for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
+                    List<ItemEntry<Integer, Double>> itemValuesTopX = wReconstructTopX.get(factorIdx);
+                    for (ItemEntry<Integer, Double> entry : itemValuesTopX) {
+                        Integer itemIdx = entry.getKey();
+                        if (itemRatingsVector.contains(itemIdx)) {
+                            continue;
+                        }
+                        Double rating = thisUserLatentFactors[factorIdx] * entry.getValue();
+                        Double currentRating = map.get(itemIdx);
+                        if (currentRating!=null){
+                            rating += currentRating;
+                        }
+                        map.put(itemIdx,rating);
                     }
-                    double predictRating = 0;
-                    for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
-                        predictRating += thisUserLatentFactors[factorIdx] * w_reconstruct[factorIdx][itemIdx];
-                    }
-                    if (Double.isNaN(predictRating)) {
-                        continue;
-                    }
-                    double g_est=calculateGEstimate(count);
-                    double predictRating2=g_est * predictRating;
-                    topNList.addToSet(itemIdx, predictRating2);
                 }
+                for (Map.Entry<Integer, Double> entry : map.entrySet()) {
+                    double predictRating2=g_est * entry.getValue();
+                    topNList.addToSet(entry.getKey(), predictRating2);
+                }
+
             }
             recommendedList.setItemIdxList(userIdx, topNList.toRecoList());
         }
