@@ -181,7 +181,6 @@ public class NMFItemItemRecommender extends AbstractRecommender {
 
     private double[][] w_reconstruct = null;
     private double[][] h_analyze = null;
-    private double[] b = null; // only fallback for user has 0 products bought
 
     private int numFactors;
     private int numIterations;
@@ -195,6 +194,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     private int cutoff = -1;
     private boolean doNotEstimateYourself = true;
     private boolean adaptiveUpdateRules = true;
+    private TopNList nullEstimatorTopNList;
 
 
     @Override
@@ -303,7 +303,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
 
     // only for predicting items for users without previous items while evaluation phase
     private void initBias() {
-        b = new double[numItems];
+        double[] b = new double[numItems];
         double allSum =0;
         for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
             double itemSum = trainMatrix.column(itemIdx).sum();
@@ -313,6 +313,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
             b[itemIdx] /= allSum;
         }
+        this.nullEstimatorTopNList = getNullEstimatorTopNList(b);
     }
 
 
@@ -688,28 +689,19 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         RecommendedItemList recommendedList = new RecommendedItemList(numUsers - 1, numUsers);
 
         LOG.info("Calculating RecommendedList for " + numUsers + " users");
-        Comparator<ItemValue> comparator = new Comparator<ItemValue>() {
-            @Override
-            public int compare(ItemValue o1, ItemValue o2) {
-                return Double.compare(o1.value, o2.value);
-            }
-
-        };
         for (int userIdx = 0; userIdx < numUsers; ++userIdx) {
             if (userIdx%100000==0) {
                 LOG.info("At user " + userIdx);
             }
+            TopNList topNList;
             SparseVector itemRatingsVector = trainMatrix.row(userIdx);
-            TreeSet<ItemValue> sorted = new TreeSet<>(comparator);
             int count = itemRatingsVector.size();
             if (count ==0){
-                for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
-                    double rating = b[itemIdx];
-                    addToSet(sorted, itemIdx, rating);
-                }
+                topNList = nullEstimatorTopNList;
             } else {
 
                 double[] thisUserLatentFactors = predictFactors(itemRatingsVector.getIndex());
+                topNList = new TopNList(topN);
 
 
                 for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
@@ -725,16 +717,10 @@ public class NMFItemItemRecommender extends AbstractRecommender {
                     }
                     double g_est=calculateGEstimate(count);
                     double predictRating2=g_est * predictRating;
-                    addToSet(sorted, itemIdx, predictRating2);
+                    topNList.addToSet(itemIdx, predictRating2);
                 }
             }
-            ArrayList<ItemEntry<Integer, Double>> list = new ArrayList<>(sorted.size());
-            Iterator<ItemValue> it = sorted.descendingIterator();
-            while (it.hasNext()) {
-                ItemValue entry =  it.next();
-                list.add(new ItemEntry<Integer, Double>(entry.itemIdx, entry.value));
-            }
-            recommendedList.setItemIdxList(userIdx, list);
+            recommendedList.setItemIdxList(userIdx, topNList.toRecoList());
         }
 
         if(recommendedList.size()==0){
@@ -744,6 +730,56 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         logParameters();
 
         return recommendedList;
+    }
+
+    private TopNList getNullEstimatorTopNList(double[] b) {
+        TopNList topNList;
+        topNList = new TopNList(topN);
+        for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
+            double rating = b[itemIdx];
+            topNList.addToSet(itemIdx, rating);
+        }
+        return topNList;
+    }
+
+    private static class TopNList {
+        private final int topN;
+        private final TreeSet<ItemValue> sortedDesc = new TreeSet<>(comparator);
+        private ItemValue smallest = null;
+
+        public TopNList(int topN) {
+            this.topN = topN;
+        }
+
+        private static final Comparator<ItemValue> comparator = new Comparator<ItemValue>() {
+            @Override
+            public int compare(ItemValue o1, ItemValue o2) {
+                return Double.compare(o2.value, o1.value);
+            }
+
+        };
+
+
+        private void addToSet(int itemIdx, double rating) {
+            if (smallest == null || smallest.value < rating) {
+                sortedDesc.add(new ItemValue(itemIdx, rating));
+                if (sortedDesc.size() > topN) {
+                    sortedDesc.pollLast();
+                    smallest = sortedDesc.last();
+                }
+            }
+        }
+
+        private List<ItemEntry<Integer, Double>> toRecoList() {
+
+            ArrayList<ItemEntry<Integer, Double>> list = new ArrayList<>(sortedDesc.size());
+            for (ItemValue itemValue : sortedDesc) {
+                list.add(new ItemEntry<Integer, Double>(itemValue.itemIdx, itemValue.value));
+
+            }
+            return list;
+        }
+
     }
 
     private static class ItemValue {
@@ -779,14 +815,6 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         }
     }
 
-    private void addToSet(TreeSet<ItemValue> sorted, int itemIdx, double rating) {
-        if (sorted.isEmpty() || sorted.first().value < rating){
-            sorted.add(new ItemValue(itemIdx, rating));
-            if (sorted.size()>topN) {
-                sorted.pollFirst();
-            }
-        }
-    }
 
 
     @Override
