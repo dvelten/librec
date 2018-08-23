@@ -39,7 +39,7 @@ import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -255,27 +255,31 @@ public class RecommenderJob {
      */
     public void saveResult(List<RecommendedItem> recommendedList) throws LibrecException, IOException, ClassNotFoundException {
         if (recommendedList != null && recommendedList.size() > 0) {
-            // make output path
-            String algoSimpleName = DriverClassUtil.getDriverName(getRecommenderClass());
-            String outputPath = conf.get("dfs.result.dir") + "/" + conf.get("data.input.path") + "-" + algoSimpleName + "-output/" + algoSimpleName;
-            if (null != dataModel && (dataModel.getDataSplitter() instanceof KCVDataSplitter || dataModel.getDataSplitter() instanceof LOOCVDataSplitter) && null != conf.getInt("data.splitter.cv.index")) {
-                outputPath = outputPath + "-" + String.valueOf(conf.getInt("data.splitter.cv.index"));
-            }
-            LOG.info("Result path is " + outputPath);
-            // convert itemList to string
-            StringBuilder sb = new StringBuilder();
-            for (RecommendedItem recItem : recommendedList) {
-                String userId = recItem.getUserId();
-                String itemId = recItem.getItemId();
-                String value = String.valueOf(recItem.getValue());
-                sb.append(userId).append(",").append(itemId).append(",").append(value).append("\n");
-            }
-            String resultData = sb.toString();
-            // save resultData
             try {
-                FileUtil.writeString(outputPath, resultData);
-            } catch (Exception e) {
-                e.printStackTrace();
+                File dir = new File(conf.get("dfs.result.dir"));
+                if (!dir.exists()) {
+                    dir.mkdirs();
+                }
+                String algoSimpleName = DriverClassUtil.getDriverName(getRecommenderClass());
+                String outFilename = conf.get("data.input.path") + "-" + algoSimpleName + "-output/" + algoSimpleName;
+                if (null != dataModel && (dataModel.getDataSplitter() instanceof KCVDataSplitter || dataModel.getDataSplitter() instanceof LOOCVDataSplitter) && null != conf.getInt("data.splitter.cv.index")) {
+                    outFilename = outFilename + "-" + String.valueOf(conf.getInt("data.splitter.cv.index"));
+                }
+                File fileOut = new File(dir, outFilename);
+                LOG.info("Result path is " + fileOut.getAbsolutePath());
+
+                BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(fileOut), "UTF-8"));
+
+                // convert itemList to string
+                for (RecommendedItem recItem : recommendedList) {
+                    String userId = recItem.getUserId();
+                    String itemId = recItem.getItemId();
+                    String value = String.valueOf(recItem.getValue());
+                    bw.append(userId).append(",").append(itemId).append(",").append(value).append("\n");
+                }
+                bw.close();
+            } catch (Exception e){
+                LOG.error("Exception while saving recommendationList", e);
             }
         }
     }
