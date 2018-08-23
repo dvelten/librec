@@ -22,6 +22,7 @@ import com.google.common.collect.BiMap;
 import net.librec.common.LibrecException;
 import net.librec.math.structure.SparseVector;
 import net.librec.recommender.AbstractRecommender;
+import net.librec.recommender.item.ItemEntry;
 import net.librec.recommender.item.RecommendedItemList;
 import net.librec.recommender.item.RecommendedList;
 
@@ -29,9 +30,7 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Random;
+import java.util.*;
 import java.util.concurrent.*;
 
 
@@ -161,8 +160,9 @@ import java.util.concurrent.*;
  *  <br>
  *  rec.nmfitemitem.do_not_estimate_yourself=true<br>
  *  rec.nmfitemitem.adaptive_update_rules=true<br>
- *  rec.nmfitemitem.parallelize_split_user_size=5000<br>
- *  rec.nmfitemitem.neighbourhood_agreement=0.5<br>
+ *  rec.nmfitemitem.parallelize_split_user_size=-1<br>
+ *  rec.nmfitemitem.neighbourhood_agreement_loss=1<br>
+ *  rec.nmfitemitem.neighbourhood_agreement_est=0<br>
  *  <br>
  *  data.model.splitter=loocv<br>
  *  data.splitter.loocv=user<br>
@@ -688,18 +688,25 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         RecommendedItemList recommendedList = new RecommendedItemList(numUsers - 1, numUsers);
 
         LOG.info("Calculating RecommendedList for " + numUsers + " users");
+        Comparator<ItemValue> comparator = new Comparator<ItemValue>() {
+            @Override
+            public int compare(ItemValue o1, ItemValue o2) {
+                return Double.compare(o1.value, o2.value);
+            }
 
+        };
         for (int userIdx = 0; userIdx < numUsers; ++userIdx) {
             if (userIdx%100000==0) {
                 LOG.info("At user " + userIdx);
             }
             SparseVector itemRatingsVector = trainMatrix.row(userIdx);
+            TreeSet<ItemValue> sorted = new TreeSet<>(comparator);
             int count = itemRatingsVector.size();
             if (count ==0){
                 for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
-                    recommendedList.addUserItemIdx(userIdx, itemIdx, b[itemIdx]);
+                    double rating = b[itemIdx];
+                    addToSet(sorted, itemIdx, rating);
                 }
-                recommendedList.topNRankItemsByUser(userIdx, topN);
             } else {
 
                 double[] thisUserLatentFactors = predictFactors(itemRatingsVector.getIndex());
@@ -717,11 +724,17 @@ public class NMFItemItemRecommender extends AbstractRecommender {
                         continue;
                     }
                     double g_est=calculateGEstimate(count);
-                    double predictRating2=(1-g_est)*b[itemIdx] + g_est * predictRating;
-                    recommendedList.addUserItemIdx(userIdx, itemIdx, predictRating2);
+                    double predictRating2=g_est * predictRating;
+                    addToSet(sorted, itemIdx, predictRating2);
                 }
-                recommendedList.topNRankItemsByUser(userIdx, topN);
             }
+            ArrayList<ItemEntry<Integer, Double>> list = new ArrayList<>(sorted.size());
+            Iterator<ItemValue> it = sorted.descendingIterator();
+            while (it.hasNext()) {
+                ItemValue entry =  it.next();
+                list.add(new ItemEntry<Integer, Double>(entry.itemIdx, entry.value));
+            }
+            recommendedList.setItemIdxList(userIdx, list);
         }
 
         if(recommendedList.size()==0){
@@ -731,6 +744,48 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         logParameters();
 
         return recommendedList;
+    }
+
+    private static class ItemValue {
+        private final int itemIdx;
+        private final double value;
+
+        public ItemValue(int itemIdx, double value) {
+            this.itemIdx = itemIdx;
+            this.value = value;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            ItemValue that = (ItemValue) o;
+            return itemIdx == that.itemIdx &&
+                    Double.compare(that.value, value) == 0;
+        }
+
+        @Override
+        public int hashCode() {
+
+            return Objects.hash(itemIdx, value);
+        }
+
+        @Override
+        public String toString() {
+            return "ItemValue{" +
+                    "itemIdx=" + itemIdx +
+                    ", value=" + value +
+                    '}';
+        }
+    }
+
+    private void addToSet(TreeSet<ItemValue> sorted, int itemIdx, double rating) {
+        if (sorted.isEmpty() || sorted.first().value < rating){
+            sorted.add(new ItemValue(itemIdx, rating));
+            if (sorted.size()>topN) {
+                sorted.pollFirst();
+            }
+        }
     }
 
 
