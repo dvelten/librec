@@ -454,16 +454,18 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     }
 
     private double calculateGLoss(int count) {
+        double count2= doNotEstimateYourself? count-1 : count;
         if (neighbourhoodAgreementLoss >0) {
-            return 1d / Math.pow(count - 1d, neighbourhoodAgreementLoss);
+            return 1d / Math.pow(count2, neighbourhoodAgreementLoss);
         } else {
             return 1d;
         }
     }
 
     private double calculateGEstimate(int count) {
+        double count2= doNotEstimateYourself? count-1 : count;
         if (neighbourhoodAgreementEst >0) {
-            return 1d / Math.pow(count - 1d, neighbourhoodAgreementEst);
+            return 1d / Math.pow(count2, neighbourhoodAgreementEst);
         } else {
             return 1d;
         }
@@ -653,7 +655,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     private double predictFactor(SparseVector itemRatingsVector, int factorIdx) {
         double sum = 0;
         for (int itemIdx : itemRatingsVector.getIndex()) {
-            sum += w_reconstruct[factorIdx][itemIdx];
+            sum += h_analyze[factorIdx][itemIdx];
         }
         return sum;
     }
