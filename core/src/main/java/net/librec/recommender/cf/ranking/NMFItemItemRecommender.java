@@ -216,11 +216,17 @@ public class NMFItemItemRecommender extends AbstractRecommender {
 
         logParameters();
         w_reconstruct = new double[numFactors][numItems];
-        h_analyze = new double[numFactors][numItems];
+        h_analyze = new double[numItems][numFactors];
 
-        initMatrix(w_reconstruct);
+        Random random = new Random(123456789L);
+        initMatrix(w_reconstruct, random);
         normFactors(w_reconstruct);
-        initMatrix(h_analyze);
+
+        for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
+            for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
+                h_analyze[itemIdx][factorIdx]=w_reconstruct[factorIdx][itemIdx];
+            }
+        }
         normItems(h_analyze);
 
     }
@@ -242,10 +248,10 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
             double sum = 0;
             for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
-                sum+=h_analyze[factorIdx][itemIdx];
+                sum+=h_analyze[itemIdx][factorIdx];
             }
             for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
-                h_analyze[factorIdx][itemIdx] /= sum;
+                h_analyze[itemIdx][factorIdx] /= sum;
             }
         }
     }
@@ -263,10 +269,8 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     }
 
 
-    private void initMatrix(double[][] m) {
+    private void initMatrix(double[][] m, Random random) {
         double initValue = 1d / 2d;
-
-        Random random = new Random(123456789L);
 
         for (int i = 0; i < m.length; i++){
             for (int j = 0; j < m[i].length; j++){
@@ -417,7 +421,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
                         double[] thisUserLatentFactors = new double[numFactors];
                         for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
                             if (doNotEstimateYourself){
-                                thisUserLatentFactors[factorIdx] = allUserLatentFactors[factorIdx] - h_analyze[factorIdx][itemIdx];
+                                thisUserLatentFactors[factorIdx] = allUserLatentFactors[factorIdx] - h_analyze[itemIdx][factorIdx];
                             } else {
                                 thisUserLatentFactors[factorIdx] = allUserLatentFactors[factorIdx];
                             }
@@ -528,7 +532,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         // Could be changed here:
 
 //			if (iteration % 2 ==0){
-        double[][] new_w_reconstruct = updateReconstruct(aggResultAll, w_reconstruct, exponent, numFactors, numItems, h_analyze);
+        double[][] new_w_reconstruct = updateReconstruct(aggResultAll);
 //				w_reconstruct = new_w_reconstruct;
 //			} else {
         updateAnalyze(aggResultAll, wNorm);
@@ -592,7 +596,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     private void updateAnalyze(AggResult aggResult, double[] wNorm) {
         for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
             for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
-                double oldValue = h_analyze[factorIdx][itemIdx];
+                double oldValue = h_analyze[itemIdx][factorIdx];
                 double numerator = aggResult.resultNumeratorAnalyze[factorIdx][itemIdx];
                 double denominator;
                 if (doNotEstimateYourself){
@@ -605,20 +609,19 @@ public class NMFItemItemRecommender extends AbstractRecommender {
                 if (Double.isNaN(newValue)) {
                     newValue =0;
                 }
-                h_analyze[factorIdx][itemIdx] = newValue;
+                h_analyze[itemIdx][factorIdx] = newValue;
             }
         }
     }
 
-
-    private static double[][] updateReconstruct(AggResult aggResultAll, double[][] w_reconstruct, double exponent, int numFactors, int numItems, double[][] h_analyze) {
+    private double[][] updateReconstruct(AggResult aggResultAll) {
         double[][] new_w_reconstruct = new double[numFactors][numItems];
         for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
             for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
 
                 double oldValue = w_reconstruct[factorIdx][itemIdx];
                 double numerator = aggResultAll.resultNumeratorReconstruct[factorIdx][itemIdx];
-                double denominatorDiff = aggResultAll.countUsersBoughtItemWeighted[itemIdx]*h_analyze[factorIdx][itemIdx];
+                double denominatorDiff = aggResultAll.countUsersBoughtItemWeighted[itemIdx]* h_analyze[itemIdx][factorIdx];
                 double denominator = aggResultAll.resultDenominatorReconstruct2[factorIdx];
                 double newValue = oldValue * Math.pow(numerator / (denominator - denominatorDiff), exponent);
 
@@ -634,7 +637,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
             for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
 
-                double denominatorDiff = aggResultAll.countUsersBoughtItemWeighted[itemIdx]*h_analyze[factorIdx][itemIdx];
+                double denominatorDiff = aggResultAll.countUsersBoughtItemWeighted[itemIdx]* h_analyze[itemIdx][factorIdx];
                 double denominator = aggResultAll.resultDenominatorReconstruct2[factorIdx];
                 double newValue = denominator - denominatorDiff;
 
@@ -676,7 +679,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         double[] latentFactors = new double[numFactors];
         for (int itemIdx : itemIndices) {
             for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
-                latentFactors[factorIdx] += h_analyze[factorIdx][itemIdx];
+                latentFactors[factorIdx] += h_analyze[itemIdx][factorIdx];
             }
         }
         return latentFactors;
@@ -857,17 +860,17 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         try{
             File wFile = new File(dir, "w_reconstruct.csv");
             LOG.info("Writing matrix w_reconstruct to file=" + wFile.getAbsolutePath());
-            saveMatrix(wFile, w_reconstruct);
+            saveMatrix(wFile, w_reconstruct, false);
             File hFile = new File(dir, "h_analyze.csv");
             LOG.info("Writing matrix h_analyze to file=" + hFile.getAbsolutePath());
-            saveMatrix(hFile, h_analyze);
+            saveMatrix(hFile, h_analyze, true);
         } catch (Exception e) {
             LOG.error("Could not save model", e);
         }
     }
 
 
-    private void saveMatrix(File file, double[][] matrix) throws IOException {
+    private void saveMatrix(File file, double[][] matrix, boolean transposed) throws IOException {
         BufferedWriter writer = new BufferedWriter(new FileWriter(file));
         writer.write("\"item_id\"");
         for (int i = 0; i < numFactors; i++) {
@@ -884,7 +887,8 @@ public class NMFItemItemRecommender extends AbstractRecommender {
             writer.write('\"');
             for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
                 writer.write(',');
-                writer.write(Double.toString(matrix[factorIdx][itemIdx]));
+                double value = transposed ? matrix[itemIdx][factorIdx] : matrix[factorIdx][itemIdx];
+                writer.write(Double.toString(value));
             }
             writer.write("\r\n");
         }
