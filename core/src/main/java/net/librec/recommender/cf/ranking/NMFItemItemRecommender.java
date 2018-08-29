@@ -310,10 +310,11 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         itemItemEstimate = new ArrayList<>(numItems);
         for (int fromItemIdx = 0; fromItemIdx < numItems; fromItemIdx++) {
             TopNList topNList = new TopNList(fastEvalOptimizationTopX);
+            double[] factors = predictFactors(new int[]{fromItemIdx});
             for (int toItemIdx = 0; toItemIdx < numItems; toItemIdx++) {
                 double sum=0;
                 for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
-                    sum += h_analyze[factorIdx][fromItemIdx] * w_reconstruct[factorIdx][toItemIdx];
+                    sum += factors[factorIdx] * w_reconstruct[factorIdx][toItemIdx];
                 }
                 topNList.addToSet(toItemIdx, sum);
             }
