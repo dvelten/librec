@@ -196,7 +196,8 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     private boolean adaptiveUpdateRules = true;
     private int fastEvalOptimizationTopX;
     private TopNList nullEstimatorTopNList;
-    private List<List<ItemEntry<Integer, Double>>> wReconstructTopX;
+    private Map<Integer, Double> nullEstimatorTopNMap;
+    private List<Map<Integer, Double>> itemItemEstimate;
 
 
     @Override
@@ -299,21 +300,25 @@ public class NMFItemItemRecommender extends AbstractRecommender {
 
         initNullEstimator();
 
-        initWReconstructTopX();
+        initItemItemEstimates();
 
+        logParameters();
     }
 
-    private void initWReconstructTopX() {
-        wReconstructTopX = new ArrayList<>(numFactors);
-        for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
+    private void initItemItemEstimates() {
+        LOG.info("Calculating item to item matrix with fast_eval_optimization.topx=" + fastEvalOptimizationTopX);
+        itemItemEstimate = new ArrayList<>(numItems);
+        for (int fromItemIdx = 0; fromItemIdx < numItems; fromItemIdx++) {
             TopNList topNList = new TopNList(fastEvalOptimizationTopX);
-            for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
-                topNList.addToSet(itemIdx, w_reconstruct[factorIdx][itemIdx]);
+            for (int toItemIdx = 0; toItemIdx < numItems; toItemIdx++) {
+                double sum=0;
+                for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
+                    sum += h_analyze[factorIdx][fromItemIdx] * w_reconstruct[factorIdx][toItemIdx];
+                }
+                topNList.addToSet(toItemIdx, sum);
             }
-            wReconstructTopX.add(topNList.toRecoList());
+            itemItemEstimate.add(topNList.toRecoMap());
         }
-
-
     }
 
 
@@ -330,6 +335,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
             bias[itemIdx] /= allSum;
         }
         this.nullEstimatorTopNList = getNullEstimatorTopNList(bias);
+        this.nullEstimatorTopNMap = nullEstimatorTopNList.toRecoMap();
     }
 
 
@@ -641,24 +647,29 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         return divergence;
     }
 
-    private double predict(SparseVector itemRatingsVector, int itemIdx) {
-        double sum = 0;
-        for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
-
-            sum += w_reconstruct[factorIdx][itemIdx] * predictFactor(itemRatingsVector, factorIdx);
-
+    private double predict(SparseVector itemRatingsVector, Integer toItemIdx) {
+        if (itemRatingsVector.size()==0){
+            Double value = nullEstimatorTopNMap.get(toItemIdx);
+            return value==null?0:value;
         }
-
-        return sum;
-    }
-
-    private double predictFactor(SparseVector itemRatingsVector, int factorIdx) {
         double sum = 0;
-        for (int itemIdx : itemRatingsVector.getIndex()) {
-            sum += h_analyze[factorIdx][itemIdx];
+        for (int fromItemIdx : itemRatingsVector.getIndex()) {
+            Map<Integer, Double> map = itemItemEstimate.get(fromItemIdx);
+            Double value = map.get(toItemIdx);
+            if (value!=null) {
+                sum += value;
+            }
         }
         return sum;
     }
+
+//    private double predictFactor(SparseVector itemRatingsVector, int factorIdx) {
+//        double sum = 0;
+//        for (int itemIdx : itemRatingsVector.getIndex()) {
+//            sum += h_analyze[factorIdx][itemIdx];
+//        }
+//        return sum;
+//    }
 
     private double[] predictFactors(int[] itemIndices) {
         double[] latentFactors = new double[numFactors];
@@ -670,12 +681,11 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         return latentFactors;
     }
 
-    /*
-     * This is not fast if you call for each item from outside
-     * Calculate factors first and then calculate with factors the prediction of each item
-     */
     @Override
     protected double predict(int userIdx, int itemIdx) throws LibrecException {
+        if (itemIdx==0 && userIdx%100000==0) {
+            LOG.info("At user " + userIdx);
+        }
         SparseVector itemRatingsVector = trainMatrix.row(userIdx);
 
         return predict(itemRatingsVector, itemIdx);
@@ -697,45 +707,45 @@ public class NMFItemItemRecommender extends AbstractRecommender {
             if (userIdx%100000==0) {
                 LOG.info("At user " + userIdx);
             }
-            TopNList topNList;
-            SparseVector itemRatingsVector = trainMatrix.row(userIdx);
-            int count = itemRatingsVector.size();
+            Set<Integer> itemSet = trainMatrix.getColumnsSet(userIdx);
+            int count = itemSet.size();
             if (count ==0){
-                topNList = nullEstimatorTopNList;
+                recommendedList.setItemIdxList(userIdx, nullEstimatorTopNList.toRecoList());
+                recommendedList.topNRankItemsByUser(userIdx, topN);
             } else {
-                double g_est=calculateGEstimate(count);
 
-                double[] thisUserLatentFactors = predictFactors(itemRatingsVector.getIndex());
-                topNList = new TopNList(topN);
+                HashMap<Integer, Double> sum = new HashMap<>();
+                for (Integer fromItemIdx : itemSet) {
 
-
-                HashMap<Integer, Double> map = new HashMap<>();
-                for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
-                    List<ItemEntry<Integer, Double>> itemValuesTopX = wReconstructTopX.get(factorIdx);
-                    for (ItemEntry<Integer, Double> entry : itemValuesTopX) {
+                    Map<Integer, Double> map = itemItemEstimate.get(fromItemIdx);
+                    for (Map.Entry<Integer, Double> entry: map.entrySet()){
                         Integer itemIdx = entry.getKey();
-                        if (itemRatingsVector.contains(itemIdx)) {
+                        if (itemSet.contains(itemIdx)) {
                             continue;
                         }
-                        Double rating = thisUserLatentFactors[factorIdx] * entry.getValue();
-                        Double currentRating = map.get(itemIdx);
-                        if (currentRating!=null){
-                            rating += currentRating;
+                        Double value = entry.getValue();
+                        if (Double.isNaN(value)) {
+                            continue;
                         }
-                        map.put(itemIdx,rating);
+                        Double sumValue = sum.get(itemIdx);
+                        if (sumValue==null){
+                            sum.put(itemIdx, value);
+                        } else {
+                            sum.put(itemIdx, value + sumValue);
+                        }
+
                     }
                 }
-                for (Map.Entry<Integer, Double> entry : map.entrySet()) {
-                    double predictRating2=g_est * entry.getValue();
-                    topNList.addToSet(entry.getKey(), predictRating2);
+
+                ArrayList<ItemEntry<Integer, Double>> list = new ArrayList<>(sum.size());
+                for (Map.Entry<Integer, Double> itemValue : sum.entrySet()) {
+                    list.add(new ItemEntry<>(itemValue.getKey(), itemValue.getValue()));
+
                 }
+                recommendedList.setItemIdxList(userIdx, list);
+                recommendedList.topNRankItemsByUser(userIdx, topN);
 
             }
-            recommendedList.setItemIdxList(userIdx, topNList.toRecoList());
-        }
-
-        if(recommendedList.size()==0){
-            throw new IndexOutOfBoundsException("No item is recommended, there is something error in the recommendation algorithm! Please check it!");
         }
 
         logParameters();
@@ -789,6 +799,16 @@ public class NMFItemItemRecommender extends AbstractRecommender {
 
             }
             return list;
+        }
+
+        private Map<Integer, Double> toRecoMap() {
+
+            LinkedHashMap<Integer, Double> map = new LinkedHashMap<>();
+            for (ItemValue itemValue : sortedDesc) {
+                map.put(itemValue.itemIdx, itemValue.value);
+
+            }
+            return map;
         }
 
     }
