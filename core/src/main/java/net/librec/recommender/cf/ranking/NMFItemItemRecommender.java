@@ -195,7 +195,6 @@ public class NMFItemItemRecommender extends AbstractRecommender {
     private boolean doNotEstimateYourself = true;
     private boolean adaptiveUpdateRules = true;
     private int fastEvalOptimizationTopX;
-    private TopNList nullEstimatorTopNList;
     private Map<Integer, Double> nullEstimatorTopNMap;
     private List<Map<Integer, Double>> itemItemEstimate;
 
@@ -314,7 +313,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         itemItemEstimate = new ArrayList<>(numItems);
         for (int fromItemIdx = 0; fromItemIdx < numItems; fromItemIdx++) {
             TopNList topNList = new TopNList(fastEvalOptimizationTopX);
-            double[] factors = predictFactors(new int[]{fromItemIdx});
+            double[] factors = h_analyze[fromItemIdx];
             for (int toItemIdx = 0; toItemIdx < numItems; toItemIdx++) {
                 double sum=0;
                 for (int factorIdx = 0; factorIdx < numFactors; factorIdx++) {
@@ -339,8 +338,7 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         for (int itemIdx = 0; itemIdx < numItems; itemIdx++) {
             bias[itemIdx] /= allSum;
         }
-        this.nullEstimatorTopNList = getNullEstimatorTopNList(bias);
-        this.nullEstimatorTopNMap = nullEstimatorTopNList.toRecoMap();
+        this.nullEstimatorTopNMap = getNullEstimatorTopNList(bias).toRecoMap();
     }
 
 
@@ -667,13 +665,6 @@ public class NMFItemItemRecommender extends AbstractRecommender {
         return sum;
     }
 
-//    private double predictFactor(SparseVector itemRatingsVector, int factorIdx) {
-//        double sum = 0;
-//        for (int itemIdx : itemRatingsVector.getIndex()) {
-//            sum += h_analyze[factorIdx][itemIdx];
-//        }
-//        return sum;
-//    }
 
     private double[] predictFactors(int[] itemIndices) {
         double[] latentFactors = new double[numFactors];
@@ -714,7 +705,11 @@ public class NMFItemItemRecommender extends AbstractRecommender {
             Set<Integer> itemSet = trainMatrix.getColumnsSet(userIdx);
             int count = itemSet.size();
             if (count ==0){
-                recommendedList.setItemIdxList(userIdx, nullEstimatorTopNList.toRecoList());
+                ArrayList<ItemEntry<Integer, Double>> list = new ArrayList<>(nullEstimatorTopNMap.size());
+                for (Map.Entry<Integer, Double> itemValue : nullEstimatorTopNMap.entrySet()) {
+                    list.add(new ItemEntry<>(itemValue.getKey(), itemValue.getValue()));
+                }
+                recommendedList.setItemIdxList(userIdx, list);
                 recommendedList.topNRankItemsByUser(userIdx, topN);
             } else {
 
@@ -793,16 +788,6 @@ public class NMFItemItemRecommender extends AbstractRecommender {
                     smallest = sortedDesc.last();
                 }
             }
-        }
-
-        private List<ItemEntry<Integer, Double>> toRecoList() {
-
-            ArrayList<ItemEntry<Integer, Double>> list = new ArrayList<>(sortedDesc.size());
-            for (ItemValue itemValue : sortedDesc) {
-                list.add(new ItemEntry<Integer, Double>(itemValue.itemIdx, itemValue.value));
-
-            }
-            return list;
         }
 
         private Map<Integer, Double> toRecoMap() {
